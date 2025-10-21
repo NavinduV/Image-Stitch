@@ -10,17 +10,22 @@ import uuid
 
 app = FastAPI()
 
-# CORS for local frontend dev (Vite default: 5173)
+# CORS: default to local dev origins, allow override via ALLOWED_ORIGINS env (comma-separated or "*")
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+origins_env = os.environ.get("ALLOWED_ORIGINS")
+if origins_env:
+    parsed = [o.strip() for o in origins_env.split(",") if o.strip()]
+    if parsed:
+        origins = parsed
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins if origins != ["*"] else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

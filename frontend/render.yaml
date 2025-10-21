@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: image-stitch-frontend
+    env: static
+    plan: free
+    region: oregon
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE
+        fromService:
+          type: web
+          name: image-stitch-backend
+          envVarKey: RENDER_EXTERNAL_URL
