@@ -7,10 +7,5 @@
     { "src": "/stitch/?", "dest": "stitch.py" },
     { "src": "/outputs/(.*)", "dest": "outputs/$1" }
   ],
-  "functions": {
-    "stitch.py": {
-      "memory": 1024,
-      "maxDuration": 30
-    }
-  }
+  
 }
