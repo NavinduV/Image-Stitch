@@ -24,13 +24,24 @@ if origins_env:
     if parsed:
         origins = parsed
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,   # must be False when allow_origins is ["*"]
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if origins == ["*"]:
+    # explicit wildcard use (not recommended for production)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # preferred: allow specific origin(s) and allow credentials if needed
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,   # set True if your frontend needs cookies/auth
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Directory to serve stitched image outputs
 BASE_DIR = os.path.dirname(__file__)
@@ -266,4 +277,3 @@ async def stitch_images(
         "error": "Stitching failed after multiple attempts. Ensure images overlap and try different capture order.",
         "details": {"attempts": attempts},
     }
-
