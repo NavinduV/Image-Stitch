@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "backend/stitch.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/stitch/?", "dest": "backend/stitch.py" },
+    { "src": "/outputs/(.*)", "dest": "backend/outputs/$1" }
+  ],
+  "functions": {
+    "backend/stitch.py": {
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  }
+}

@@ -20,14 +20,20 @@ origins = [
 ]
 origins_env = os.environ.get("ALLOWED_ORIGINS")
 if origins_env:
-    parsed = [o.strip() for o in origins_env.split(",") if o.strip()]
-    if parsed:
-        origins = parsed
+    if origins_env.strip() == "*":
+        origins = ["*"]
+    else:
+        parsed = [o.strip() for o in origins_env.split(",") if o.strip()]
+        if parsed:
+            origins = parsed
+
+# Determine if we're using wildcard (affects credentials)
+use_wildcard = origins == ["*"] or (len(origins) == 1 and origins[0] == "*")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if use_wildcard else origins,
+    allow_credentials=False if use_wildcard else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

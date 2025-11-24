@@ -8,3 +8,7 @@ if PARENT_DIR not in sys.path:
     sys.path.append(PARENT_DIR)
 
 from stitch import app  # FastAPI app
+
+# Export the app for Vercel serverless functions
+# Vercel looks for 'app' variable in the handler file
+
