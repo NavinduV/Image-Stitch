@@ -1,0 +1,27 @@
+{
+    "version": 2,
+    "builds": [
+        {
+            "src": "backend/stitch.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/stitch/?",
+            "dest": "backend/stitch.py"
+        },
+        {
+            "src": "/outputs/(.*)",
+            "dest": "backend/stitch.py"
+        },
+        {
+            "src": "/docs",
+            "dest": "backend/stitch.py"
+        },
+        {
+            "src": "/openapi.json",
+            "dest": "backend/stitch.py"
+        }
+    ]
+}
