@@ -12,10 +12,10 @@ app = FastAPI()
 
 # CORS: default to local dev origins, allow override via ALLOWED_ORIGINS env (comma-separated or "*")
 origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    # "http://localhost:5173",
+    # "http://127.0.0.1:5173",
+    # "http://localhost:3000",
+    # "http://127.0.0.1:3000",
     "https://image-stitch-theta.vercel.app",
 ]
 origins_env = os.environ.get("ALLOWED_ORIGINS")
@@ -266,3 +266,4 @@ async def stitch_images(
         "error": "Stitching failed after multiple attempts. Ensure images overlap and try different capture order.",
         "details": {"attempts": attempts},
     }
+
