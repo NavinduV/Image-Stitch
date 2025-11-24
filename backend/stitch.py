@@ -26,8 +26,8 @@ if origins_env:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,   # must be False when allow_origins is ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -266,13 +266,3 @@ async def stitch_images(
         "error": "Stitching failed after multiple attempts. Ensure images overlap and try different capture order.",
         "details": {"attempts": attempts},
     }
-
-from fastapi.responses import Response
-@app.middleware("http")
-async def add_cors_header(request, call_next):
-    resp = await call_next(request)
-    resp.headers["Access-Control-Allow-Origin"] = os.environ.get("ALLOWED_ORIGINS", "*")
-    resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-    return resp
