@@ -1,60 +1,84 @@
+# stitch.py
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+import logging
 import cv2
 import numpy as np
-import tempfile
 import os
 import uuid
 
+logger = logging.getLogger("stitch")
+logging.basicConfig(level=logging.INFO)
+
 app = FastAPI()
 
-# CORS: default to local dev origins, allow override via ALLOWED_ORIGINS env (comma-separated or "*")
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://image-stitch-theta.vercel.app",
-]
-origins_env = os.environ.get("ALLOWED_ORIGINS")
+# --- Config (works without env vars; supports env override) ---
+# Default allowed origin for local dev
+DEFAULT_FRONTEND = "http://localhost:5173"   # change if your local frontend runs on another port
+# Default backend url for building absolute image URLs
+DEFAULT_BACKEND_URL = "http://localhost:8000"
+
+# Read env overrides if present
+origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+backend_url_env = os.environ.get("BACKEND_URL", "").strip()
+
 if origins_env:
-    if origins_env.strip() == "*":
-        origins = ["*"]
-    else:
-        parsed = [o.strip() for o in origins_env.split(",") if o.strip()]
-        if parsed:
-            origins = parsed
+    # ALLOWED_ORIGINS can be comma-separated list
+    origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+else:
+    # default to the deployed frontend + local dev origin
+    origins = [
+        DEFAULT_FRONTEND,
+        # "http://localhost:5173",
+        # "http://127.0.0.1:5173",
+        # "http://localhost:3000",
+        # "http://127.0.0.1:3000",
+        "https://image-stitch-theta.vercel.app",
+    ]
 
-# Determine if we're using wildcard (affects credentials)
-use_wildcard = origins == ["*"] or (len(origins) == 1 and origins[0] == "*")
+BACKEND_URL = backend_url_env or os.environ.get("VERCEL_URL", "") or DEFAULT_BACKEND_URL
+# if VERCEL_URL present it might be like "image-stitch-backend.vercel.app" so ensure scheme
+if BACKEND_URL and BACKEND_URL.startswith("http") is False and "vercel.app" in BACKEND_URL:
+    BACKEND_URL = "https://" + BACKEND_URL
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if use_wildcard else origins,
-    allow_credentials=False if use_wildcard else True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Configure CORS correctly: exact origins (good for credentialed requests)
+# If someone explicitly sets ALLOWED_ORIGINS="*" then allow wildcard w/out credentials
+if origins == ["*"]:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,   # set to True because we return exact origins
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-# Directory to serve stitched image outputs
+# Directory to serve stitched image outputs (ephemeral in serverless)
 BASE_DIR = os.path.dirname(__file__)
 OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
-
-# Mount static files so the frontend can access stitched images via URL
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 
-# --- Custom feature-based fallback (SIFT/ORB + Homography) ---
+# --- small constants ---
+MAX_BYTES_PER_FILE = 12 * 1024 * 1024  # 12 MB per file (adjust as needed)
+
+# --- helper functions (stitch logic preserved) ---
 def _get_feature_extractor():
-    # Prefer SIFT if available (OpenCV >= 4.4 has SIFT in main), else ORB
+    # Prefer SIFT if available (OpenCV >= 4.4 has SIFT_create), else ORB
     if hasattr(cv2, "SIFT_create"):
         try:
             return cv2.SIFT_create()
         except Exception:
             pass
-    # Fallback to ORB
     return cv2.ORB_create(nfeatures=4000)
 
 def _match_keypoints(desc1, desc2, use_sift: bool):
@@ -65,7 +89,6 @@ def _match_keypoints(desc1, desc2, use_sift: bool):
     else:
         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     knn = matcher.knnMatch(desc1, desc2, k=2)
-    # Lowe's ratio test
     good = []
     for m_n in knn:
         if len(m_n) < 2:
@@ -84,9 +107,8 @@ def _estimate_homography(kp1, kp2, matches, ransac_thresh=4.0):
     return H
 
 def _compute_cumulative_homographies(images):
-    # Compute transforms to the coordinate system of the first image
     fx = _get_feature_extractor()
-    use_sift = isinstance(fx, cv2.SIFT) if hasattr(cv2, 'SIFT') else hasattr(cv2, 'SIFT_create')
+    use_sift = hasattr(cv2, "SIFT_create")
     grays = [cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) for im in images]
     kps = []
     descs = []
@@ -95,20 +117,18 @@ def _compute_cumulative_homographies(images):
         kps.append(kp)
         descs.append(des)
 
-    Hs = [np.eye(3, dtype=np.float64)]  # H_0 = I
+    Hs = [np.eye(3, dtype=np.float64)]
     for i in range(1, len(images)):
         matches = _match_keypoints(descs[i], descs[i-1], use_sift)
         H_i_im1 = _estimate_homography(kps[i], kps[i-1], matches)
         if H_i_im1 is None:
-            return None  # fail fast
-        # cumulative: map i to 0 using chain H_{i->i-1} * H_{i-1->0}
+            return None
         H_to_prev = Hs[i-1]
         H_to_0 = H_to_prev @ H_i_im1
         Hs.append(H_to_0)
     return Hs
 
 def _warp_and_blend(images, Hs):
-    # Compute canvas bounds by warping image corners
     corners = []
     for im, H in zip(images, Hs):
         h, w = im.shape[:2]
@@ -124,7 +144,6 @@ def _warp_and_blend(images, Hs):
     out_h = max_y + shift_y
     if out_w <= 0 or out_h <= 0:
         return None
-    # translation to keep all coords positive
     T = np.array([[1,0,shift_x],[0,1,shift_y],[0,0,1]], dtype=np.float64)
 
     canvas = np.zeros((out_h, out_w, 3), dtype=np.float32)
@@ -134,7 +153,6 @@ def _warp_and_blend(images, Hs):
         Ht = T @ H
         warped = cv2.warpPerspective(im, Ht, (out_w, out_h))
         mask = cv2.warpPerspective(np.ones(im.shape[:2], dtype=np.float32), Ht, (out_w, out_h))
-        # simple feather blending
         canvas += warped.astype(np.float32) * mask[..., None]
         weight += mask
 
@@ -142,29 +160,30 @@ def _warp_and_blend(images, Hs):
     out = (canvas / weight[..., None]).astype(np.uint8)
     return out
 
+# --- endpoint ---
 @app.post("/stitch/")
 async def stitch_images(
     files: list[UploadFile] = File(...),
-    mode: str = Form("panorama"),  # optional hint: "panorama" | "scans"
-    try_scans_on_fail: bool = Form(True),  # kept for backward compat; auto-tries both anyway
-    downscale: float = Form(1.0),  # optional hint: 0.1 .. 1.0
+    mode: str = Form("panorama"),
+    try_scans_on_fail: bool = Form(True),
+    downscale: float = Form(1.0),
 ):
     images = []
-
-    # Read images directly from uploaded bytes (no temp files needed)
+    # read and validate
     for file in files:
         data = await file.read()
         if not data:
             continue
+        if len(data) > MAX_BYTES_PER_FILE:
+            return JSONResponse(status_code=400, content={"error": f"File {file.filename} too large (max {MAX_BYTES_PER_FILE} bytes)"})
         arr = np.frombuffer(data, np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is not None:
             images.append(img)
 
     if len(images) < 2:
-        return {"error": "Need at least 2 images to stitch"}
+        return JSONResponse(status_code=400, content={"error": "Need at least 2 images to stitch"})
 
-    # Helper: resize images by scale
     def resize_images(imgs, scale_val: float):
         if scale_val >= 0.999:
             return imgs
@@ -179,7 +198,6 @@ async def stitch_images(
                 out.append(cv2.resize(im, (new_w, new_h), interpolation=cv2.INTER_AREA))
         return out
 
-    # Helper: run stitcher for specific mode and image order
     def run_stitch_for(mode_name: str, imgs):
         m = (mode_name or "").strip().lower()
         if m == "scans":
@@ -188,15 +206,7 @@ async def stitch_images(
             st = cv2.Stitcher_create(cv2.Stitcher_PANORAMA)
         return st.stitch(imgs)
 
-    # Build attempt strategy: scales x modes x order
-    status_map = {
-        0: "OK",
-        1: "ERR_NEED_MORE_IMGS",
-        2: "ERR_HOMOGRAPHY_EST_FAIL",
-        3: "ERR_CAMERA_PARAMS_ADJUST_FAIL",
-    }
-
-    # Scales: prioritize provided downscale if valid, then common candidates
+    status_map = {0: "OK", 1: "ERR_NEED_MORE_IMGS", 2: "ERR_HOMOGRAPHY_EST_FAIL", 3: "ERR_CAMERA_PARAMS_ADJUST_FAIL"}
     user_scale = downscale if isinstance(downscale, (int, float)) else 1.0
     try:
         user_scale = float(user_scale)
@@ -205,50 +215,39 @@ async def stitch_images(
     scales = []
     if 0.1 <= user_scale <= 1.0:
         scales.append(round(user_scale, 2))
-    # Append defaults and deduplicate while preserving order
     for sc in [1.0, 0.7, 0.5, 0.35]:
         if sc not in scales:
             scales.append(sc)
 
-    # Modes: prioritize hinted mode, then the other
     primary_mode = (mode or "panorama").strip().lower()
     modes = ["panorama", "scans"]
     if primary_mode in ("panorama", "scans"):
         other = "scans" if primary_mode == "panorama" else "panorama"
         modes = [primary_mode, other]
 
-    # Orders: normal then reversed
     orders = [False, True]
-
     attempts = []
-    for sc in scales:
-        imgs_scaled = resize_images(images, sc)
-        for mo in modes:
-            for rev in orders:
-                imgs_try = list(reversed(imgs_scaled)) if rev else imgs_scaled
-                status, out_img = run_stitch_for(mo, imgs_try)
-                attempts.append({
-                    "scale": sc,
-                    "mode": mo,
-                    "reversed": rev,
-                    "status": int(status),
-                    "statusText": status_map.get(int(status), str(status)),
-                })
-                if status == cv2.Stitcher_OK and out_img is not None:
-                    filename = f"stitched_{uuid.uuid4().hex}.jpg"
-                    output_path = os.path.join(OUTPUTS_DIR, filename)
-                    cv2.imwrite(output_path, out_img)
-                    return {
-                        "message": "Stitching successful",
-                        "imageUrl": f"/outputs/{filename}",
-                        "usedMode": mo,
-                        "usedScale": sc,
-                        "reversedOrder": rev,
-                    }
 
-    # As a final fallback, try custom feature-based homography stitching
     try:
-        # Use the most promising scale we already tested (smallest for robustness)
+        for sc in scales:
+            imgs_scaled = resize_images(images, sc)
+            for mo in modes:
+                for rev in orders:
+                    imgs_try = list(reversed(imgs_scaled)) if rev else imgs_scaled
+                    status, out_img = run_stitch_for(mo, imgs_try)
+                    attempts.append({"scale": sc, "mode": mo, "reversed": rev, "status": int(status), "statusText": status_map.get(int(status), str(status))})
+                    if status == cv2.Stitcher_OK and out_img is not None:
+                        filename = f"stitched_{uuid.uuid4().hex}.jpg"
+                        output_path = os.path.join(OUTPUTS_DIR, filename)
+                        cv2.imwrite(output_path, out_img)
+                        image_url = f"{BACKEND_URL.rstrip('/')}/outputs/{filename}" if BACKEND_URL else f"/outputs/{filename}"
+                        return {"message": "Stitching successful", "imageUrl": image_url, "usedMode": mo, "usedScale": sc, "reversedOrder": rev}
+    except Exception as e:
+        logger.exception("stitcher raised an exception")
+        # fall through to fallback path
+
+    # fallback custom homography
+    try:
         sc_final = scales[-1]
         imgs_small = resize_images(images, sc_final)
         Hs = _compute_cumulative_homographies(imgs_small)
@@ -258,17 +257,9 @@ async def stitch_images(
                 filename = f"stitched_{uuid.uuid4().hex}.jpg"
                 output_path = os.path.join(OUTPUTS_DIR, filename)
                 cv2.imwrite(output_path, blended)
-                return {
-                    "message": "Stitching successful (custom homography)",
-                    "imageUrl": f"/outputs/{filename}",
-                    "usedMode": "custom-homography",
-                    "usedScale": sc_final,
-                    "reversedOrder": False,
-                }
+                image_url = f"{BACKEND_URL.rstrip('/')}/outputs/{filename}" if BACKEND_URL else f"/outputs/{filename}"
+                return {"message": "Stitching successful (custom homography)", "imageUrl": image_url, "usedMode": "custom-homography", "usedScale": sc_final, "reversedOrder": False}
     except Exception:
-        pass
+        logger.exception("custom homography fallback failed")
 
-    return {
-        "error": "Stitching failed after multiple attempts. Ensure images overlap and try different capture order.",
-        "details": {"attempts": attempts},
-    }
+    return JSONResponse(status_code=400, content={"error": "Stitching failed after multiple attempts. Ensure images overlap and try different capture order.", "details": {"attempts": attempts}})
