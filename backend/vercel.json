@@ -6,6 +6,5 @@
   "routes": [
     { "src": "/stitch/?", "dest": "stitch.py" },
     { "src": "/outputs/(.*)", "dest": "outputs/$1" }
-  ],
-  
+  ]
 }
